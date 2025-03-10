@@ -1,2 +1,2 @@
 # PATHOCOM_pipeline
-This reposiSnakemake and DuckDB pipelines in created to process PATHOCOMs 50 TB of metagenom shotgun sequencing data 
+Snakemake and DuckDB pipelines I created to process MPI Tübingens PATHOCOMs 50 TB of metagenom shotgun sequencing data 
