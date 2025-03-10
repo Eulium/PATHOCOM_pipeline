@@ -1,0 +1,71 @@
+#Transformation and preprocessing of DIAMOND alinged metagenome data
+
+configfile: "config.yaml"
+SAMPLE = glob_wildcards(config['source']).sample
+BAD_SAMPLE=[]
+SAMPLE = [x for x in SAMPLE if x not in BAD_SAMPLE]
+
+
+# Target rule
+rule target: 
+    input:
+        grouped=[f"data/grouped_parquets/{name}.parquet" for name in SAMPLE], 
+        DB="data/protein_abundance/summary.db"
+	
+
+def get_mem_mb(wildcards, attempt):
+    return attempt * 50000
+
+rule load_into_table: 
+    input: 
+        agg=expand("data/grouped_parquets/{name}.parquet", name= glob_wildcards("data/grouped_parquets/{sample}.parquet").sample) 	
+    output: 
+        DB="data/protein_abundance/summary.db"
+    resources:
+        mem_mb=get_mem_mb
+    threads: 
+        128
+    script: 
+        "scripts/load_into_table.sh"
+
+
+# Group by on protein per sample
+rule groupby_per_sample: 
+    input:
+        "data/top_x_parquets/sample_id={sample}"
+    output: 
+        "data/grouped_parquets/{sample}.parquet",
+        temp("data/grouped_parquets/{sample}.db")
+    threads: 32
+    resources: 
+        mem_mb=get_mem_mb
+    script: 
+        "scripts/groupby_per_sample.sh"
+
+# apply top_x to sample
+rule apply_top_x: 
+    input:
+        "data/parquets/{sample}"
+    output: 
+        directory("data/top_x_parquets/sample_id={sample}"),
+        temp("data/top_x_parquets/{sample}.db")
+    params: 
+        topx=config["top_x"]
+    resources: 
+        mem_mb=get_mem_mb
+    threads: 32
+    script: 
+        "scripts/apply_top_x.sh"
+
+# transformation into parquet
+rule transform_into_parquet:
+    input: 
+        config['source']
+    output: 
+        directory("data/parquets/{sample}"),
+        temp("data/parquets/{sample}.db")
+    threads: 32
+    resources: 
+        mem_mb=get_mem_mb
+    script:
+        "scripts/transform_into_parquet.sh"

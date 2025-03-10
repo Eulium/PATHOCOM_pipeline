@@ -1,0 +1,2 @@
+source: /set/path/to/source/directory
+top_x: set percentage of top DIAMOND result to keep, simliar to DIAMONDs topx

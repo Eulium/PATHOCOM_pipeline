@@ -1,0 +1,672 @@
+#Snakemake pipeline for mapping bacterial proteins against Uniref80%
+
+# Set config file
+configfile: "config.yaml"
+
+# Setup for assembled proteins fasta files
+assembled_path = config['assembled_path']
+assembled_fa = glob_wildcards(os.path.join(config['assembled_path'], "{isolate}")).isolate
+assembled_names = [x.split('.')[0] for x in assembled_fa]
+
+# Setup read fasta files
+reads_path = config['reads_path']
+reads_fa = glob_wildcards(os.path.join(config['reads_path'], "{isolate}")).isolate
+reads_names = [x.split('.')[0].split('_')[0] for x in reads_fa]
+
+ref_db = config['ref_db']
+abundance_table = config['abundance_table']
+
+
+
+target_go = [f"data/go_present/assembled/isolate_name={isolate}/data_0.parquet" for isolate in assembled_names]  + [f"data/go_present/reads/isolate_name={isolate}/data_0.parquet" for isolate in reads_names]
+target_protein_abundance_table = [f"data/type=isolate_to_sample/source=assembled/isolate={isolate}/data_0.parquet" for isolate in assembled_names] + [f"data/type=isolate_to_sample/source=reads/isolate={isolate}/data_0.parquet" for isolate in reads_names]
+
+
+def get_mem_mb(wildcards, attempt):
+    return attempt * 50000
+
+
+rule all:
+	input:
+		Protein_abundance = target_protein_abundance_table
+		# GO = target,
+		# ncbi_mapping = "data/ncbi_mapping.pq"
+		# summary = "data/matched_summary.pq",
+
+rule move_isolates:
+	input:
+		assembled_path + "{isolate}"
+	output:
+		fasta = "data/fasta/assembled/{isolate}"
+	group:
+		"unpack"
+	shell:
+		"""
+		cp {input} data/fasta/assembled
+		"""
+
+rule translate_to_fasta:
+	input:
+		query_1 = reads_path + "/{isolate}_1.fastq.gz",
+		query_2 = reads_path + "/{isolate}_2.fastq.gz"
+	output:
+		fasta_1 = "data/fasta/reads/{isolate}_1.fasta",
+		fasta_2 = "data/fasta/reads/{isolate}_2.fasta"
+	group:
+		"unpack"
+	shell:
+		"""
+		gunzip -c {input.query_1} | sed -n '1~4s/^@/>/p;2~4p' > {output.fasta_1}
+		gunzip -c {input.query_2} | sed -n '1~4s/^@/>/p;2~4p' > {output.fasta_2}
+		"""
+
+rule run_DIAMOND_blastp:
+	input:
+		db = config['ref_db'],
+		query = "data/fasta/assembled/{isolate}.faa"
+	output:
+		hits = "data/alignment/assembled/tsv/{isolate}.tsv"
+	params:
+		sensitivity = "--fast",
+		header = "--header simple",
+		format = "--outfmt 6 qseqid sseqid evalue bitscore",
+		top = "--top 10"
+	threads:
+		32
+	resources:
+		mem_mb=get_mem_mb
+	shell:
+		"""
+		diamond blastp \
+		--db {input.db} \
+		--query {input.query} \
+		--threads {threads} \
+		--quiet \
+		--block-size 4.0 \
+		-o {output.hits} \
+		{params.sensitivity} \
+		{params.format} \
+		{params.header}
+		"""
+
+rule run_DIAMOND_blastx:
+	input:
+		db = config['ref_db'],
+		fasta_1 = "data/fasta/reads/{isolate}_1.fasta",
+		fasta_2 = "data/fasta/reads/{isolate}_2.fasta"
+	output:
+		hits = "data/alignment/reads/tsv/{isolate}.tsv"
+	params:
+		sensitivity = "--fast",
+		header = "--header simple",
+		format = "--outfmt 6 qseqid qstrand sseqid evalue bitscore",
+	threads:
+		32
+	resources:
+		mem_mb=get_mem_mb
+	shell:
+		"""
+		diamond blastx \
+		--db {input.db} \
+		--query {input.fasta_1} {input.fasta_2} \
+		--threads {threads} \
+		--quiet \
+		--block-size 4.0 \
+		-o {output.hits} \
+		{params.sensitivity} \
+		{params.format} \
+		{params.header}
+		"""
+
+
+rule bastp_to_parquet:
+	input:
+		hits = "data/alignment/assembled/tsv/{isolate}.tsv"
+	output:
+		db = temp("data/alignment/assembled/pq/db_{isolate}.db"),
+		isolates_parquet = "data/alignment/assembled/pq/{isolate}.pq"
+	threads:
+		16
+	resources:
+		mem_mb=20000
+	group:
+		"parquet_p"
+	shell:
+		"""
+		duckdb {output.db} \
+		-c "SET threads = {threads};\
+		COPY ( \
+		SELECT split_part(qseqid, '|',1) AS isolate, qseqid, sseqid, evalue, bitscore \
+		FROM read_csv('{input.hits}', delim = '\\t', header = true))\
+		TO '{output.isolates_parquet}' \
+		(FORMAT parquet); "
+		"""
+
+rule bastx_to_parquet:
+	input:
+		hits = "data/alignment/reads/tsv/{isolate}.tsv"
+	output:
+		db = temp("data/alignment/reads/pq/db_{isolate}.db"),
+		isolates_parquet = "data/alignment/reads/pq/{isolate}.pq"
+	threads:
+		16
+	resources:
+		mem_mb=20000
+	group:
+		"parquet_x"
+	shell:
+		"""
+		duckdb {output.db} \
+		-c "SET threads = {threads};\
+		COPY ( \
+		SELECT '{wildcards.isolate}' AS isolate, concat(qseqid, qstrand) as qseqid, sseqid, evalue, bitscore \
+		FROM read_csv('{input.hits}', delim = '\\t', header = true))\
+		TO '{output.isolates_parquet}' \
+		(FORMAT parquet); "
+		"""
+
+rule apply_topx:
+	input:
+		isolates = "data/alignment/{source}/pq/{isolate}.pq"
+	output:
+		top_isolates = "data/top_x/{source}/{isolate}.pq",
+		db = temp("data/top_x/{source}/db_{isolate}.db")
+	params:
+		top = 10
+	threads:
+		16
+	resources:
+		mem_mb=get_mem_mb
+	group:
+		"apply"
+	shell:
+		"""
+		duckdb {output.db} <<- EOF
+		CREATE TABLE inserts AS
+		SELECT
+			isolate,
+			qseqid,
+			sseqid,
+			evalue,
+			bitscore
+		FROM
+			read_parquet("{input.isolates}")
+		;
+		CREATE TABLE TOP_SCORE AS
+		(
+		WITH TOP_SCORE AS
+		(
+			SELECT
+				qseqid,
+				max(bitscore) AS top_score
+			FROM
+				inserts
+			GROUP BY
+				qseqid
+		)
+		SELECT
+			inserts.qseqid,
+			inserts.sseqid,
+			inserts.bitscore / TOP_SCORE.top_score * 100 AS perc
+		FROM
+			inserts
+		JOIN
+			TOP_SCORE
+		USING
+			(qseqid)
+		)
+		;
+		CREATE TABLE results AS
+		SELECT
+			isolate,
+			qseqid,
+			sseqid,
+			evalue,
+			bitscore,
+			perc
+		FROM
+			inserts
+		JOIN
+			TOP_SCORE
+		USING
+			(qseqid, sseqid)
+		WHERE
+			perc >= {params.top}
+		;
+		COPY (
+			SELECT
+				isolate,
+				qseqid,
+				sseqid,
+				evalue,
+				bitscore,
+				perc,
+				1 / counts_table.n_hits AS proportion
+			FROM
+				results
+			JOIN 
+				(
+				SELECT
+					old.qseqid as qseqid,
+					count(old.qseqid) AS n_hits
+				FROM 
+					results AS old
+				GROUP BY
+					old.qseqid
+				)
+				AS counts_table
+			USING
+				(qseqid)
+			)
+		TO
+			"{output.top_isolates}"
+			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
+
+EOF
+		"""
+
+
+rule protein_abundance:
+	input:
+		top_isolates = "data/top_x/{source}/{isolate}.pq"
+	output:
+		protein_abundance = "data/protein_abundance/{source}/isolate={isolate}/data_0.parquet",
+		db = temp("data/protein_abundance/{source}/db_{isolate}.db")
+	threads:
+		16
+	resources:
+		mem_mb=get_mem_mb
+	group:
+		"abundance"
+	shell:
+		"""
+		duckdb {output.db} <<- EOF
+		COPY 
+			(
+			SELECT
+				sseqid,
+				sum(proportion) as sum_proportion
+			FROM
+				read_parquet("{input.top_isolates}")
+			GROUP BY
+				sseqid
+			)
+		TO
+			"{output.protein_abundance}"
+			(FORMAT PARQUET, PER_THREAD_OUTPUT false)
+		;
+		EOF
+		"""
+
+rule ncbi_mapping_to_parquet:
+	input:
+		ncbi = config['ncbi_mapping']
+	output:
+		db = temp("data/ncbi_mapping.db"),
+		ncbi_mapping = "data/ncbi_mapping.pq"
+	threads:
+		16
+	resources:
+		mem_mb=100000
+	shell:
+		"""
+		duckdb {output.db} <<- EOF
+		COPY (
+		SELECT
+			UniRef90 AS sseqid,
+			unnest(string_split(GO, ';')) AS go
+		FROM
+			read_csv("{input.ncbi}",
+					header = false,
+					names = [UniProtKB_AC, UniProtKB_ID, GeneID, RefSeq, GI, PDB, GO, UniRef100, UniRef90, UniRef50, UniParc, PIR, NCBI_taxon, MIM, UniGene, PubMed, EMBL, EMBL_CDS, Ensembl, Ensembl_TRS, Ensembl_PRO, Additional_PubMed],
+					delim = '\t',
+					compression = 'gzip')
+		)
+		TO 
+			"{output.ncbi_mapping}"
+			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
+EOF
+		"""
+
+rule match_go_to_isolate:
+	input:
+		protein_abundance = "data/protein_abundance/{source}/isolate={isolate}/data_0.parquet",
+		ncbi_mapping = rules.ncbi_mapping_to_parquet.output.ncbi_mapping
+	output:
+		GO_present = "data/go_present/{source}/isolate={isolate}/data_0.parquet",
+		db = temp("data/go_present/{source}/db_{isolate}.db")
+	threads:
+		16
+	resources:
+		mem_mb=get_mem_mb
+	group:
+		"match_go"
+	shell:
+		"""
+		duckdb {output.db} <<- EOF
+		COPY 
+		(
+		SELECT
+			ABUNDANCE.sseqid AS sseqid,
+			ABUNDANCE.sum_proportion AS sum_proportion,
+			NCBI.go AS go
+		FROM
+			read_parquet("{input.protein_abundance}")
+				AS ABUNDANCE
+		JOIN
+			read_parquet("{input.ncbi_mapping}")
+				AS NCBI
+		USING
+			(sseqid)
+		)
+		TO
+			"{output.GO_present}"
+			(FORMAT PARQUET, PER_THREAD_OUTPUT false)
+		;
+		EOF
+		"""
+
+rule match_isolate_to_samples:
+	input:
+		isolate_hits = "data/top_x/{source}/{isolate}.pq",
+		ncbi_mapping = "data/ncbi_mapping.pq"
+	output:
+		matched_isolates = "data/type=isolate_to_sample/source={source}/isolate={isolate}/data_0.parquet",
+		db = temp("data/matched_isolates/{source}/db_{isolate}.db")
+	threads:
+		32
+	params:
+		protein= config['protein_abundance']
+	resources:
+		mem_mb= lambda wildcards, attempt : attempt * 100000
+	group:
+		"match_samples"
+	shell:
+		"""
+		duckdb {output.db} <<- EOF
+		COPY (
+			SELECT
+				ABUNDANCE.Sample_id AS sample_id,
+				ABUNDANCE.sseqid_id AS matching_uniref90,
+				NCBI.go AS go,
+				sum(ISOLATE.proportion) AS sum_isolate_proportion,
+				count(ISOLATE.proportion) AS num_of_proportion
+			FROM
+				read_parquet("{input.isolate_hits}")
+					AS ISOLATE
+			JOIN
+				read_parquet("{params.protein}/Sample_id=*/*.parquet", hive_partitioning = true)
+					AS ABUNDANCE
+			ON
+				ISOLATE.sseqid = ABUNDANCE.sseqid_id
+			JOIN
+				read_parquet("{input.ncbi_mapping}")
+					AS NCBI
+			ON
+				ABUNDANCE.sseqid_id = NCBI.sseqid
+			GROUP BY
+				ABUNDANCE.Sample_id, ABUNDANCE.sseqid_id, NCBI.go
+			)
+		TO
+			"{output.matched_isolates}"
+			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
+		
+		EOF
+		"""
+
+
+
+# rule match_to_GO:
+# 	input:
+# 		matched_isolates = "data/matched_isolates/{scource}/{isolate}.pq",
+# 		ncbi = "data/ncbi_mapping.pq"
+# 	output:
+# 		GO_present = "data/go_present/{scource}/isolate={isolate}/data_0.parquet",
+# 		db = temp("data/go_present/{scource}/db_{isolate}.db")
+# 	threads:
+# 		16
+# 	resources:
+# 		mem_mb=get_mem_mb
+# 	group:
+# 		"match_go"
+# 	shell:
+# 		"""
+# 		duckdb {output.db} <<- EOF
+# 		CREATE TEMP TABLE isolates_matched AS
+# 		SELECT
+# 			sample_id,
+# 			isolate_name,
+# 			matching_uniref90
+# 		FROM
+# 			read_parquet("{input.matched_isolates}")
+# 		;
+# 		CREATE TEMP TABLE ncbi AS
+# 		SELECT
+# 			UniRef90,
+# 			go
+# 		FROM
+# 			read_parquet("{input.ncbi}")
+# 		;
+# 		COPY 
+# 		(
+# 		SELECT
+# 			DISTINCT ON (IM.isolate_name, NCBI.go)
+# 			IM.sample_id,
+# 			IM.isolate_name,
+# 			NCBI.go
+# 		FROM
+# 			isolates_matched AS IM
+# 		JOIN
+# 			NCBI
+# 		ON
+# 			IM.matching_uniref90 = NCBI.UniRef90
+# 		)
+# 		TO
+# 			"{output.GO_present}"
+# 			(FORMAT PARQUET, PER_THREAD_OUTPUT false)
+# 		;
+# EOF
+# 		"""
+
+# rule summary:
+# 	input:
+# 		hits = expand("data/matched_isolates/{isolate}.pq", isolate = assembled_names)
+# 	output:
+# 		summary = "data/matched_summary.pq",
+# 		db = temp("data/summary/temp.db")
+# 	params:
+# 		folder = "data/matched_isolates/"
+# 	threads:
+# 		32
+# 	resources:
+# 		mem_mb=500000
+# 	shell:
+# 		"""
+# 		duckdb {output.db} <<- EOF
+# 		COPY (
+# 			SELECT	
+# 					parse_filename(MATCHED_ISOLATES.filename, true, 'system') AS Isolate,
+# 					count(DISTINCT (MATCHED_ISOLATES.Sample_id)) AS Num_distinct_samples,
+# 					count(DISTINCT (MATCHED_ISOLATES.sseqid_id)) AS Num_distinct_clusters,
+# 					max(MATCHED_ISOLATES.sseqid_proportion_sum)
+# 			FROM
+# 					read_parquet("{params.folder}/*.pq", filename = true)
+# 					AS MATCHED_ISOLATES
+# 			GROUP BY
+# 					MATCHED_ISOLATES.filename
+# 			)
+# 		TO
+# 			"{output.summary}"
+# 			(FORMAT patquet);
+# EOF
+# 		"""
+
+# rule get_GO_clusters:
+# 	input:
+# 		matched_isolates = expand("data/go_present/isolate_name={isolate}/data_0.parquet", isolate = assembled_names),
+# 		db = '/ptmp/pboppert/assembled_pathocom/diamond-postprocess-playground/code/Pipeline/data/DB'	
+# 	output:
+# 		GO_present = directory("data/GO_mapped")
+# 	params:
+# 		match_isolates = "data/go_present/"
+# 	threads:
+# 		64
+# 	resources:
+# 		mem_mb=500000
+# 	shell:
+# 		"""
+# 		duckdb {input.db} << EOF
+		
+# 		CREATE OR REPLACE TABLE GO_present AS
+# 		SELECT
+# 			sample_id,
+# 			isolate_name,
+# 			go
+# 		FROM
+# 			read_parquet("{params.match_isolates}/*/data_*.parquet", hive_partitioning = true)
+# 		;
+# 		COPY
+# 		(
+# 			PIVOT
+# 				GO_distinct
+# 			ON
+# 				go_term
+# 		)
+# 		TO
+# 			"{output.GO_present}"
+# 			(FORMAT PARQUET, PER_THREAD_OUTPUT true)
+# 		;
+# EOF
+# 		"""
+
+# rule concat_fasta:
+# 	input:
+# 		isolate = expand(assembled_path + "{B}", B = fasta_list)
+# 	output:
+# 		all_fasta = "data/fasta/proteins_concat.faa"
+# 	shell:
+# 		"""
+# 		cat {input.isolate} > {output.all_fasta}
+# 		"""
+
+# rule run_DIAMOND:
+# 	input:
+# 		# done = rules.init_DIAMOND.output.done,
+# 		db = config['ref_db'],
+# 		query = rules.concat_fasta.output.all_fasta
+# 	output:
+# 		hits = "data/alignment/tsv/hits.tsv"
+# 	params:
+# 		tmp_dir = "data/tmp_dir",
+# 		ptmp_dir = "data/ptmp_dir",
+# 		sensitivity = "--sensitive",
+# 		header = "--header simple",
+# 		format = "--outfmt 6 qseqid sseqid evalue bitscore",
+# 		top = "--top 10"
+# 	shell:
+# 		"""
+# 		diamond blastp \
+# 		--db {input.db} \
+# 		--query {input.query} \
+# 		-o {output.hits} \
+# 		{params.sensitivity} \
+# 		{params.format} \
+# 		{params.header}
+# 		"""
+
+# checkpoint to_parquet:
+# 	input:
+# 		isolates = rules.run_DIAMOND.output.hits
+# 	output:
+# 		db = temp("data/db"),
+# 		isolates_parquet = directory("data/alignment/hits.pq")
+# 	threads:
+# 		64
+# 	resources:
+# 		mem_mb=300000
+# 	shell:
+# 		"""
+# 		duckdb {output.db} \
+# 		-c "SET threads = {threads};\
+# 		COPY ( \
+# 		SELECT split_part(qseqid, '|',1) AS isolate, qseqid, sseqid, evalue, bitscore \
+# 		FROM read_csv('{input.isolates}', delim = '\\t', header = true))\
+# 		TO '{output.isolates_parquet}' \
+# 		(FORMAT parquet, PARTITION_BY isolate); "
+# 		"""
+
+# def get_filesnames(wildcards):
+# 	checkpoint_output = checkpoints.to_parquet.get().output[1]
+# 	return expand("data/alignment/hits.pq/{isolate}",isolate=glob_wildcards(os.assembled_path.join(checkpoint_output, "{isolate}/data_0.parquet")).isolate)
+     
+
+# rule match_to_samples:
+# 	input:
+# 		isolates= get_filesnames,
+# 		protein= "/ptmp/pboppert/assembled_pathocom/diamond-postprocess-playground/code/Bacteria_to_UniRef_pipeline/abundance_part"
+# 	output:
+# 		matched_isolates = "data/matched_isolates/{isolate}.pq",
+# 		db = temp("data/db_{isolate}.db")
+# 	threads: 32
+# 	resources:
+# 		mem_mb=50000
+# 	shell:
+# 		"""
+# 		duckdb {output.db} <<- EOF
+# 		.echo on
+# 		SET max_memory='{resources.mem_mb}GB';
+# 		COPY (
+# 			SELECT
+# 				DISTINCT ON (ABUNDANCE.Sample_id)
+# 				ISOLATES.qseqid AS qseqid,
+# 				ABUNDANCE.Sample_id AS Sample_id,
+# 				ABUNDANCE.sseqid_proportion_sum AS sseqid_proportion_sum
+# 			FROM
+# 				read_parquet("{input.isolates}/*.parquet", hive_partitioning = true)
+# 					AS ISOLATES
+# 			JOIN
+# 				read_parquet("{input.protein}/*/*.parquet", hive_partitioning = true)
+# 					AS ABUNDANCE
+# 			ON
+# 				ISOLATES.sseqid = ABUNDANCE.sseqid_id
+# 			)
+# 		TO
+# 			"{output.matched_isolates}"
+# 			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
+		
+# 		EOF
+# 		"""
+
+
+# def get_map_files(wildcards):
+# 	checkpoint_output = checkpoints.to_parquet.get().output[1]
+# 	return expand("data/matched_isolates/{isolate}",isolate=glob_wildcards(os.assembled_path.join(checkpoint_output, "{isolate}.pq")).isolate)
+     
+# rule summary:
+# 	input:
+# 		get_map_files
+# 	output:
+# 		summary = "data/matched_summary.tsv",
+# 		db = temp("data/summary/temp.db")
+
+# 	shell:
+# 		"""
+# 		duckdb {output.db} <<- EOF
+# 				COPY (
+# 			SELECT
+# 					MATCHED_ISOLATES.qseqid,
+# 					count(MATCHED_ISOLATES.Sample_id),
+# 					max(MATCHED_ISOLATES.sseqid_proportion_sum)
+# 			FROM
+# 					read_parquet("{input.}")
+# 					AS MATCHED_ISOLATES
+# 			GROUP BY
+# 					MATCHED_ISOLATES.qseqid
+# 			ORDER BY
+# 					MATCHED_ISOLATES.qseqid, count(MATCHED_ISOLATES.Sample_id) DESC
+# 			)
+# 		TO
+# 			"{output.summary}"
+# 			(FORMAT CSV, header true, delim '\\t');
+# 		EOF
+# 		"""
