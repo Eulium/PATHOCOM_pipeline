@@ -12,8 +12,12 @@ Pepared sql queries can be accessed by DuckDB programm api's and allow for faste
 
 ### Bacteria to uniref: 
 
-Used to mapp bacterial isolates against sample 
+Used to compare assembles and raw shotgun sequencing reads from isolated bacterial samples to each other by aligning them against the clustered uniref50 reference database.
+After DIAMOND blastx/blastp resulting hits are used to create protein abundance tabels, use the ncbi mapping table to asigne per hit GO terms and map the isolate results against the resulting tables from the sample preprocessing table.
+Expects nucleotide fastq reads for raw read and amio acid fasta for assmbled sequences. 
 
+### Runtime
+We ran both pipelines on the MPCDF Viper cluster, using 8 nodes the total runtime for 6000 file (~50TB of data) with samples preprocessing is less than 24 hours while the Bacteria to uniref pipeline needs around 18 hours to run the pipeline on 200 files containing assmbled sequences and 200 files with raw reads.
 
 ## Instalation
 To run it you will have to install [Snakemake](https://snakemake.readthedocs.io/en/stable/getting_started/installation.html) (full or minimal) and [DuckDB CLI](https://duckdb.org/docs/installation/?version=stable&environment=cli&platform=linux&download_method=direct&architecture=x86_64). DuckDb requires no installation and can be run from the downloded binary (you may have to add it to your path variable), databases are either in temporay and in memory or a writen to a file given when launching DuckDB
@@ -25,5 +29,8 @@ To run it you will have to install [Snakemake](https://snakemake.readthedocs.io/
 **DuckDB:**
 
 `curl https://install.duckdb.org | sh`
+
+### Executing
+You can run this pipline via Snakemake on a single node, use the Snakemakes build in Slurm executor or use a custom slurm executor to run it on multiple nodes simultaneous. 
 
 
