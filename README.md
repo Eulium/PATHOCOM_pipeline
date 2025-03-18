@@ -31,6 +31,6 @@ To run it you will have to install [Snakemake](https://snakemake.readthedocs.io/
 `curl https://install.duckdb.org | sh`
 
 ### Executing
-You can run this pipline via Snakemake on a single node, use the Snakemakes build in Slurm executor or use a custom slurm executor to run it on multiple nodes simultaneous. 
+You can run this pipline via Snakemake on a single node, use the Snakemake"s build in Slurm executor or a custom slurm executor fort faster execution on multiple nodes. 
 
 
