@@ -1,7 +1,6 @@
 #!/bin/bash
 # Apply the DIAMOND top_x setting to a sample set
 # Final result does not contain unmapped reads
-
 duckdb "${snakemake_output[1]}"  << EOF
 .timer on
 .echo off
@@ -11,10 +10,8 @@ SET threads = ${snakemake[threads]};
 -- Table containing reads
 .print 'LOAD DATA'
 CREATE OR REPLACE TEMP TABLE inserts (
-    sample_id varchar,
-    qseqid_id varchar,
-    qseqid_key int,
-    sseqid_id varchar,
+    qseqid varchar,
+    sseqid varchar,
     pident REAL,
     length SMALLINT,
     mismatch SMALLINT,
@@ -32,10 +29,8 @@ CREATE OR REPLACE TEMP TABLE inserts (
 INSERT INTO inserts BY NAME
     (
     SELECT
-        'SID' AS sample_id,
-        qseqid_id,
-        qseqid_key,
-        sseqid_id,
+        qseqid,
+        sseqid,
         pident,
         length,
         mismatch,
@@ -48,7 +43,7 @@ INSERT INTO inserts BY NAME
         bitscore,
         mapped
     FROM
-        read_parquet('${snakemake_input[0]}/*.parquet', compression = 'zstd', filename = true)
+        read_parquet('${snakemake_input[sample_parquet]}/*.parquet', compression = 'zstd')
     WHERE mapped = true
     )
 ;
@@ -62,24 +57,24 @@ CREATE TEMP TABLE
     WITH TOP_SCORE AS                                          -- Per read highest bitscore
         (                                    
         SELECT
-            qseqid_key,
+            qseqid,
             max(bitscore) AS top_score                 
         FROM
             inserts
         GROUP BY
-            qseqid_key
+            qseqid
         )                               
     SELECT
-        inserts.qseqid_key AS qseqid_key,                      -- Query and Protein keys needed to enable later mapping of
-        inserts.sseqid_id AS sseqid_id,                        -- perc to propper read/protein entry
+        inserts.qseqid AS qseqid,                      -- Query and Protein keys needed to enable later mapping of
+        inserts.sseqid AS sseqid,                        -- perc to propper read/protein entry
         inserts.bitscore / TOP_SCORE.top_score * 100 AS perc   -- Percentage of hit's A bitscore in reads highest bitscore B
         
     FROM
         inserts
     JOIN
         TOP_SCORE
-    ON
-        TOP_SCORE.qseqid_key = inserts.qseqid_key               -- JOINS read specific top_score to each entry, via read key
+    USING 
+        (qseqid)               -- JOINS read specific top_score to each entry, via read key
     ) 
 ;
 
@@ -89,10 +84,8 @@ CREATE TEMP TABLE
 .print ${snakemake_params[topx]} 
 CREATE OR REPLACE TEMP TABLE inserts AS 
     SELECT
-        reads.sample_id,
-        reads.qseqid_key,
-        reads.qseqid_id,
-        reads.sseqid_id,
+        reads.qseqid,
+        reads.sseqid,
         reads.pident,
         reads.length,
         reads.mismatch,
@@ -109,11 +102,12 @@ CREATE OR REPLACE TEMP TABLE inserts AS
     JOIN
         TOP_PERC
     ON
-        reads.qseqid_key = TOP_PERC.qseqid_key                
+        reads.qseqid = TOP_PERC.qseqid                
         AND 
-        reads.sseqid_id = TOP_PERC.sseqid_id
+        reads.sseqid = TOP_PERC.sseqid
     WHERE
-        TOP_PERC.perc >= ${snakemake_params[topx]} 
+        TOP_PERC.perc >=  ${snakemake_params[topx]} 
+;
 
 -- Table no longer needed
 DROP TABLE TOP_PERC;
@@ -127,10 +121,9 @@ DROP TABLE TOP_PERC;
 .print "Retain all hits that have bitscores at least TOPX precent as great as a reads best hits " 
 COPY (
         SELECT
-        reads.sample_id,
-        reads.qseqid_key,
+        reads.qseqid,
         reads.qseqid_id,
-        reads.sseqid_id,
+        reads.sseqid,
         reads.pident,
         reads.length,
         reads.mismatch,
@@ -148,17 +141,17 @@ COPY (
     JOIN
         (   
         SELECT
-            OLD.qseqid_key AS qseqid_key,
-            count(OLD.qseqid_key) AS n_hits    -- Count number of hits per read
+            OLD.qseqid AS qseqid,
+            count(OLD.qseqid) AS n_hits    -- Count number of hits per read
         FROM 
             inserts AS OLD
         GROUP BY
-            OLD.qseqid_key
+            OLD.qseqid
         ) AS NEW
     ON
-        reads.qseqid_key = NEW.qseqid_key
+        reads.qseqid = NEW.qseqid
     ORDER BY 
-        reads.sseqid_id                        -- Order by protein key to enable faser querying of proteins 
+        reads.sseqid                        -- Order by protein key to enable faser querying of proteins 
     )
-TO "${snakemake_output[0]}" (FORMAT PARQUET, OVERWRITE_OR_IGNORE true, PER_THREAD_OUTPUT true);
+TO "${snakemake_output[sample_topx]}" (FORMAT PARQUET, OVERWRITE_OR_IGNORE true, PER_THREAD_OUTPUT true);
 EOF

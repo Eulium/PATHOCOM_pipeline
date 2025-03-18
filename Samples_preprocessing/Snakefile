@@ -6,19 +6,33 @@ BAD_SAMPLE=[]
 SAMPLE = [x for x in SAMPLE if x not in BAD_SAMPLE]
 
 
+# Function to set memory requirements
+def get_mem_mb(wildcards, attempt):
+    return attempt * 50000
+
 # Target rule
 rule target: 
     input:
         grouped=[f"data/grouped_parquets/{name}.parquet" for name in SAMPLE], 
-        DB="data/protein_abundance/summary.db"
-	
+        DB="data/protein_abundance/summary.db",
+        query_prepared="query_prepared.done"
 
-def get_mem_mb(wildcards, attempt):
-    return attempt * 50000
+
+# Load additional information into the databass and create prepared queries for faster repeated queries based on given taxid etc.
+rule prepare_queries: 
+    input: 
+        DB="data/protein_abundance/summary.db", 
+        NCBI_mapping="data/ncbi_mapping.txt.gz", 
+        Linage_file = "/ptmp/pboppert/Pathocom/diamond-postprocess-playground/taxonomy/lineage.pqt"
+    output: 
+        touch("query_prepared.done")
+    script: 
+        "scripts/prepare_queries.sh"
 
 rule load_into_table: 
     input: 
-        agg=expand("data/grouped_parquets/{name}.parquet", name= glob_wildcards("data/grouped_parquets/{sample}.parquet").sample) 	
+        # agg=expand("data/grouped_parquets/{name}.parquet", name= glob_wildcards("data/grouped_parquets/{sample}.parquet").sample)     
+        agg=expand("data/grouped_parquets/sample={sample}/data_0.parquet", name= glob_wildcards("data/grouped_parquets/sample={sample}/data_0.parquet").sample)
     output: 
         DB="data/protein_abundance/summary.db"
     resources:
@@ -32,9 +46,9 @@ rule load_into_table:
 # Group by on protein per sample
 rule groupby_per_sample: 
     input:
-        "data/top_x_parquets/sample_id={sample}"
+        sample_topx = "data/top_x_parquets/sample_id={sample}"
     output: 
-        "data/grouped_parquets/{sample}.parquet",
+        sample_grouped = directory("data/grouped_parquets/sample={sample}"),
         temp("data/grouped_parquets/{sample}.db")
     threads: 32
     resources: 
@@ -45,9 +59,9 @@ rule groupby_per_sample:
 # apply top_x to sample
 rule apply_top_x: 
     input:
-        "data/parquets/{sample}"
+        sample_parquet = "data/parquets/sample={sample}"
     output: 
-        directory("data/top_x_parquets/sample_id={sample}"),
+        sample_topx = directory("data/top_x/sample_id={sample}"),
         temp("data/top_x_parquets/{sample}.db")
     params: 
         topx=config["top_x"]
@@ -62,7 +76,7 @@ rule transform_into_parquet:
     input: 
         config['source']
     output: 
-        directory("data/parquets/{sample}"),
+        sample_parquet = directory("data/parquets/sample={sample}"),
         temp("data/parquets/{sample}.db")
     threads: 32
     resources: 
