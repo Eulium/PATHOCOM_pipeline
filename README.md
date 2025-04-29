@@ -3,17 +3,23 @@ PATHOCOM is an ongoing ERC SYNERGY project of the Max-Plank Institute for Biolog
 To achieve this goal it combines large-scale field observations of microbes in Arabidopsis thaliana with ultra-high-throughput experimental tests of host-dependent microbial interactions.
 Two pipelines are used to transform the collected metagenome shotgun data into a usable database: **Samples preprocessing** and **Bacteria to uniref** 
 (The project is still work in process, so these pipelines are neither finished nor currently in a clean and 100% up to date format) 
+
 ### Samples preprocessing:
 
-Expects a folder with sample blasted aganist the clustered uniref database, each tsv file should at least contain qseqid, sseqid and bitscore. For each sample it will create a parquet file apply diamonds topx filtering (if not needed set topx = 0 in config file) and calculates per sample protein aboundance tables with counts.
-At the end a single DuckDB database is created, containing all per sample proteins abundance counts in an single table.
-We then load the NCBI mapping table, a custom table containing linage information and pepare SQL queries.
+Expects a folder with sample blasted aganist the clustered uniref database, each tsv file should at least contain qseqid, sseqid and bitscore.
+For each sample it will create a parquet file apply diamonds topx filtering (if not needed set topx = 0 in config file), calculates weighted target hits, and prepares per sample tables containing hit counts.
+The result is a single DuckDB database is created, containing all per sample proteins abundance counts in an single table.
+It then loads the NCBI mapping table, a custom table containing linage information and pepare SQL queries.
+The prepared queries link single hits to gene, gene funtion, taxonomy etc. 
+
 Pepared sql queries can be accessed by DuckDB programm api's and allow for faster repeated queries e.g select all proteins and their counts belonging to a single given GO term. 
 
 ### Bacteria to uniref: 
 
 Used to compare assembles and raw shotgun sequencing reads from isolated bacterial samples to each other by aligning them against the clustered uniref50 reference database.
 After DIAMOND blastx/blastp resulting hits are used to create protein abundance tabels, use the ncbi mapping table to asigne per hit GO terms and map the isolate results against the resulting tables from the sample preprocessing table.
+Extracts for the "read" and "assmbled" data such as per sample Go term counts, per sample UNIREF counts and count value distribution.
+Extracted data is then plotted has comperative heatmaps etc.
 Expects nucleotide fastq reads for raw read and amio acid fasta for assmbled sequences. 
 
 ### Runtime
