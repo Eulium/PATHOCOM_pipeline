@@ -1,4 +1,4 @@
-# PATHOCOM_pipeline
+# PATHOCOM pipeline
 PATHOCOM is an ongoing ERC SYNERGY project of the Max-Plank Institute for Biology Tübingen Germany,  Laboratoire des interactions plantes - microbes - environnement, CNRS Tolouse, France and the New York University, NY, USA that aims to understand and predict pathogen communities on plants to better combat infectious diseases.
 To achieve this goal it combines large-scale field observations of microbes in Arabidopsis thaliana with ultra-high-throughput experimental tests of host-dependent microbial interactions.
 Two pipelines are used to transform the collected metagenome shotgun data into a usable database: **Samples preprocessing** and **Bacteria to uniref** 
@@ -19,7 +19,7 @@ Pepared sql queries can be accessed by DuckDB programm api's and allow for faste
 Used to compare assembles and raw shotgun sequencing reads from isolated bacterial samples to each other by aligning them against the clustered uniref50 reference database.
 After DIAMOND blastx/blastp resulting hits are used to create protein abundance tabels, use the ncbi mapping table to asigne per hit GO terms and map the isolate results against the resulting tables from the sample preprocessing table.
 Extracts for the "read" and "assmbled" data such as per sample Go term counts, per sample UNIREF counts and count value distribution.
-Extracted data is then plotted has comperative heatmaps etc.
+Extracted data is then plotted has comperative heatmaps etc, see jupyter notebook.
 Expects nucleotide fastq reads for raw read and amio acid fasta for assmbled sequences. 
 
 ### Runtime
