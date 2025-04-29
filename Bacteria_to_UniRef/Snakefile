@@ -1,25 +1,22 @@
 #Snakemake pipeline for mapping bacterial proteins against Uniref80%
 
 # Set config file
-configfile: "config.yaml"
+configfile: "./config.yaml"
 
 # Setup for assembled proteins fasta files
 assembled_path = config['assembled_path']
 assembled_fa = glob_wildcards(os.path.join(config['assembled_path'], "{isolate}")).isolate
 assembled_names = [x.split('.')[0] for x in assembled_fa]
 
+
 # Setup read fasta files
 reads_path = config['reads_path']
 reads_fa = glob_wildcards(os.path.join(config['reads_path'], "{isolate}")).isolate
 reads_names = [x.split('.')[0].split('_')[0] for x in reads_fa]
 
-ref_db = config['ref_db']
-abundance_table = config['abundance_table']
 
-
-
-target_go = [f"data/go_present/assembled/isolate_name={isolate}/data_0.parquet" for isolate in assembled_names]  + [f"data/go_present/reads/isolate_name={isolate}/data_0.parquet" for isolate in reads_names]
-target_protein_abundance_table = [f"data/type=isolate_to_sample/source=assembled/isolate={isolate}/data_0.parquet" for isolate in assembled_names] + [f"data/type=isolate_to_sample/source=reads/isolate={isolate}/data_0.parquet" for isolate in reads_names]
+target_go = [f"data/go_present/type=assembled/isolate={isolate}/data_0.parquet" for isolate in assembled_names]  + [f"data/go_present/type=reads/isolate={isolate}/data_0.parquet" for isolate in reads_names]
+# target_protein_abundance_table = [f"data/type=isolate_to_sample/source=assembled/isolate={isolate}/data_0.parquet" for isolate in assembled_names] + [f"data/type=isolate_to_sample/source=reads/isolate={isolate}/data_0.parquet" for isolate in reads_names]
 
 
 def get_mem_mb(wildcards, attempt):
@@ -28,21 +25,19 @@ def get_mem_mb(wildcards, attempt):
 
 rule all:
 	input:
-		Protein_abundance = target_protein_abundance_table
-		# GO = target,
-		# ncbi_mapping = "data/ncbi_mapping.pq"
-		# summary = "data/matched_summary.pq",
+		# Protein_abundance = target_go,
+		done = "data/plot.done", 
 
 rule move_isolates:
 	input:
-		assembled_path + "{isolate}"
+		assembled_path + "{isolate}.faa"
 	output:
-		fasta = "data/fasta/assembled/{isolate}"
+		fasta = "data/fasta/assembled/{isolate}.faa"
 	group:
 		"unpack"
 	shell:
 		"""
-		cp {input} data/fasta/assembled
+		cp {input} {output.fasta}
 		"""
 
 rule translate_to_fasta:
@@ -119,7 +114,7 @@ rule run_DIAMOND_blastx:
 		"""
 
 
-rule bastp_to_parquet:
+rule blastp_to_parquet:
 	input:
 		hits = "data/alignment/assembled/tsv/{isolate}.tsv"
 	output:
@@ -142,7 +137,7 @@ rule bastp_to_parquet:
 		(FORMAT parquet); "
 		"""
 
-rule bastx_to_parquet:
+rule blastx_to_parquet:
 	input:
 		hits = "data/alignment/reads/tsv/{isolate}.tsv"
 	output:
@@ -169,10 +164,10 @@ rule apply_topx:
 	input:
 		isolates = "data/alignment/{source}/pq/{isolate}.pq"
 	output:
-		top_isolates = "data/top_x/{source}/{isolate}.pq",
-		db = temp("data/top_x/{source}/db_{isolate}.db")
+		top_isolates = "data/top_x/type={source}/{isolate}.pq",
+		db = temp("data/top_x/type={source}/db_{isolate}.db")
 	params:
-		top = 10
+		top = 90
 	threads:
 		16
 	resources:
@@ -268,9 +263,9 @@ EOF
 
 rule protein_abundance:
 	input:
-		top_isolates = "data/top_x/{source}/{isolate}.pq"
+		top_isolates = "data/top_x/type={source}/{isolate}.pq"
 	output:
-		protein_abundance = "data/protein_abundance/{source}/isolate={isolate}/data_0.parquet",
+		protein_abundance = "data/protein_abundance/type={source}/isolate={isolate}/data_0.parquet",
 		db = temp("data/protein_abundance/{source}/db_{isolate}.db")
 	threads:
 		16
@@ -318,23 +313,27 @@ rule ncbi_mapping_to_parquet:
 		FROM
 			read_csv("{input.ncbi}",
 					header = false,
-					names = [UniProtKB_AC, UniProtKB_ID, GeneID, RefSeq, GI, PDB, GO, UniRef100, UniRef90, UniRef50, UniParc, PIR, NCBI_taxon, MIM, UniGene, PubMed, EMBL, EMBL_CDS, Ensembl, Ensembl_TRS, Ensembl_PRO, Additional_PubMed],
+					names = [
+					UniProtKB_AC, UniProtKB_ID, GeneID, RefSeq, GI, PDB, GO, UniRef100,
+					UniRef90, UniRef50, UniParc, PIR, NCBI_taxon, MIM, UniGene, PubMed,
+					EMBL, EMBL_CDS, Ensembl, Ensembl_TRS, Ensembl_PRO, Additional_PubMed
+					],
 					delim = '\t',
 					compression = 'gzip')
 		)
 		TO 
 			"{output.ncbi_mapping}"
 			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
-EOF
+		EOF
 		"""
 
 rule match_go_to_isolate:
 	input:
-		protein_abundance = "data/protein_abundance/{source}/isolate={isolate}/data_0.parquet",
+		protein_abundance = "data/protein_abundance/type={source}/isolate={isolate}/data_0.parquet",
 		ncbi_mapping = rules.ncbi_mapping_to_parquet.output.ncbi_mapping
 	output:
-		GO_present = "data/go_present/{source}/isolate={isolate}/data_0.parquet",
-		db = temp("data/go_present/{source}/db_{isolate}.db")
+		GO_present = "data/go_present/type={source}/isolate={isolate}/data_0.parquet",
+		db = temp("data/go_present/type={source}/db_{isolate}.db")
 	threads:
 		16
 	resources:
@@ -366,107 +365,96 @@ rule match_go_to_isolate:
 		EOF
 		"""
 
-rule match_isolate_to_samples:
+# Precalc all tables needed for plotting
+rule prep_plotting: 
 	input:
-		isolate_hits = "data/top_x/{source}/{isolate}.pq",
-		ncbi_mapping = "data/ncbi_mapping.pq"
+		protein_abundance_assembled = expand("data/go_present/type={source}/isolate={isolate}/data_0.parquet", source = ['assembled'], isolate = assembled_names),
+		protein_abundance_reads = expand("data/go_present/type={source}/isolate={isolate}/data_0.parquet", source = ['reads'], isolate = reads_names)
 	output:
-		matched_isolates = "data/type=isolate_to_sample/source={source}/isolate={isolate}/data_0.parquet",
-		db = temp("data/matched_isolates/{source}/db_{isolate}.db")
+		db = "data/matrix.db",
+		assembled_matrix = "data/assmbled_go_matrix.pq",
+		read_matrix = "data/reads_go_matrix.pq",
+		assembled_protein_distribution =  "data/assembled_protein_clusters_dist.pq",
+		reads_protein_distribution =  "data/reads_protein_clusters_dist.pq", 
+		reads_UNIREF50_distribution =  "data/protein_clusters_dist_UNREF50_reads.pq",
+		assembled_UNIREF50_distribution =   "data/protein_clusters_dist_UNREF50_assembled.pq",
+		assembled_go_distribution =  "data/assembled_go_dist.pq", 
+		reads_go_distribution =   "data/reads_go_dist.pq", 
 	threads:
-		32
-	params:
-		protein= config['protein_abundance']
+		128
+	script: 
+		"scripts/prep_plotting.sh"
+
+
+rule plot_distribution:
+	input:
+		db = "data/matrix.db"
+	output:
+		"data/Cumluative_distribution_protein_go.png",
+		"data/cell_value_histogramm_and_heatmap",
+		"data/heatmap_assmbled.png",
+		"data/heatmap_reads.png",
+		done = touch("data/plot.done")
+	threads:
+		64
 	resources:
-		mem_mb= lambda wildcards, attempt : attempt * 100000
-	group:
-		"match_samples"
-	shell:
-		"""
-		duckdb {output.db} <<- EOF
-		COPY (
-			SELECT
-				ABUNDANCE.Sample_id AS sample_id,
-				ABUNDANCE.sseqid_id AS matching_uniref90,
-				NCBI.go AS go,
-				sum(ISOLATE.proportion) AS sum_isolate_proportion,
-				count(ISOLATE.proportion) AS num_of_proportion
-			FROM
-				read_parquet("{input.isolate_hits}")
-					AS ISOLATE
-			JOIN
-				read_parquet("{params.protein}/Sample_id=*/*.parquet", hive_partitioning = true)
-					AS ABUNDANCE
-			ON
-				ISOLATE.sseqid = ABUNDANCE.sseqid_id
-			JOIN
-				read_parquet("{input.ncbi_mapping}")
-					AS NCBI
-			ON
-				ABUNDANCE.sseqid_id = NCBI.sseqid
-			GROUP BY
-				ABUNDANCE.Sample_id, ABUNDANCE.sseqid_id, NCBI.go
-			)
-		TO
-			"{output.matched_isolates}"
-			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
-		
-		EOF
-		"""
+		mem_mb=50000
+	script: 
+		"scripts/plot_figs.py"
 
 
+## NOT CURRENTLY USED ##
 
-# rule match_to_GO:
+# matches isolates to sample results from 'sample_preprocessing' pipeline
+# rule match_isolate_to_samples:
 # 	input:
-# 		matched_isolates = "data/matched_isolates/{scource}/{isolate}.pq",
-# 		ncbi = "data/ncbi_mapping.pq"
+# 		isolate_hits = "data/top_x/{source}/{isolate}.pq",
+# 		ncbi_mapping = "data/ncbi_mapping.pq"
 # 	output:
-# 		GO_present = "data/go_present/{scource}/isolate={isolate}/data_0.parquet",
-# 		db = temp("data/go_present/{scource}/db_{isolate}.db")
+# 		matched_isolates = "data/type=isolate_to_sample/source={source}/isolate={isolate}/data_0.parquet",
+# 		db = temp("data/matched_isolates/{source}/db_{isolate}.db")
 # 	threads:
-# 		16
+# 		32
+# 	params:
+# 		protein= config['protein_abundance']
 # 	resources:
-# 		mem_mb=get_mem_mb
+# 		mem_mb= lambda wildcards, attempt : attempt * 100000
 # 	group:
-# 		"match_go"
+# 		"match_samples"
 # 	shell:
 # 		"""
 # 		duckdb {output.db} <<- EOF
-# 		CREATE TEMP TABLE isolates_matched AS
-# 		SELECT
-# 			sample_id,
-# 			isolate_name,
-# 			matching_uniref90
-# 		FROM
-# 			read_parquet("{input.matched_isolates}")
-# 		;
-# 		CREATE TEMP TABLE ncbi AS
-# 		SELECT
-# 			UniRef90,
-# 			go
-# 		FROM
-# 			read_parquet("{input.ncbi}")
-# 		;
-# 		COPY 
-# 		(
-# 		SELECT
-# 			DISTINCT ON (IM.isolate_name, NCBI.go)
-# 			IM.sample_id,
-# 			IM.isolate_name,
-# 			NCBI.go
-# 		FROM
-# 			isolates_matched AS IM
-# 		JOIN
-# 			NCBI
-# 		ON
-# 			IM.matching_uniref90 = NCBI.UniRef90
-# 		)
+# 		COPY (
+# 			SELECT
+# 				ABUNDANCE.Sample_id AS sample_id,
+# 				ABUNDANCE.sseqid_id AS matching_uniref90,
+# 				NCBI.go AS go,
+# 				sum(ISOLATE.proportion) AS sum_isolate_proportion,
+# 				count(ISOLATE.proportion) AS num_of_proportion
+# 			FROM
+# 				read_parquet("{input.isolate_hits}")
+# 					AS ISOLATE
+# 			JOIN
+# 				read_parquet("{params.protein}/Sample_id=*/*.parquet", hive_partitioning = true)
+# 					AS ABUNDANCE
+# 			ON
+# 				ISOLATE.sseqid = ABUNDANCE.sseqid_id
+# 			JOIN
+# 				read_parquet("{input.ncbi_mapping}")
+# 					AS NCBI
+# 			ON
+# 				ABUNDANCE.sseqid_id = NCBI.sseqid
+# 			GROUP BY
+# 				ABUNDANCE.Sample_id, ABUNDANCE.sseqid_id, NCBI.go
+# 			)
 # 		TO
-# 			"{output.GO_present}"
-# 			(FORMAT PARQUET, PER_THREAD_OUTPUT false)
-# 		;
-# EOF
+# 			"{output.matched_isolates}"
+# 			(FORMAT PARQUET, PER_THREAD_OUTPUT false);
+		
+# 		EOF
 # 		"""
+
+
 
 # rule summary:
 # 	input:
@@ -501,104 +489,6 @@ rule match_isolate_to_samples:
 # EOF
 # 		"""
 
-# rule get_GO_clusters:
-# 	input:
-# 		matched_isolates = expand("data/go_present/isolate_name={isolate}/data_0.parquet", isolate = assembled_names),
-# 		db = '/ptmp/pboppert/assembled_pathocom/diamond-postprocess-playground/code/Pipeline/data/DB'	
-# 	output:
-# 		GO_present = directory("data/GO_mapped")
-# 	params:
-# 		match_isolates = "data/go_present/"
-# 	threads:
-# 		64
-# 	resources:
-# 		mem_mb=500000
-# 	shell:
-# 		"""
-# 		duckdb {input.db} << EOF
-		
-# 		CREATE OR REPLACE TABLE GO_present AS
-# 		SELECT
-# 			sample_id,
-# 			isolate_name,
-# 			go
-# 		FROM
-# 			read_parquet("{params.match_isolates}/*/data_*.parquet", hive_partitioning = true)
-# 		;
-# 		COPY
-# 		(
-# 			PIVOT
-# 				GO_distinct
-# 			ON
-# 				go_term
-# 		)
-# 		TO
-# 			"{output.GO_present}"
-# 			(FORMAT PARQUET, PER_THREAD_OUTPUT true)
-# 		;
-# EOF
-# 		"""
-
-# rule concat_fasta:
-# 	input:
-# 		isolate = expand(assembled_path + "{B}", B = fasta_list)
-# 	output:
-# 		all_fasta = "data/fasta/proteins_concat.faa"
-# 	shell:
-# 		"""
-# 		cat {input.isolate} > {output.all_fasta}
-# 		"""
-
-# rule run_DIAMOND:
-# 	input:
-# 		# done = rules.init_DIAMOND.output.done,
-# 		db = config['ref_db'],
-# 		query = rules.concat_fasta.output.all_fasta
-# 	output:
-# 		hits = "data/alignment/tsv/hits.tsv"
-# 	params:
-# 		tmp_dir = "data/tmp_dir",
-# 		ptmp_dir = "data/ptmp_dir",
-# 		sensitivity = "--sensitive",
-# 		header = "--header simple",
-# 		format = "--outfmt 6 qseqid sseqid evalue bitscore",
-# 		top = "--top 10"
-# 	shell:
-# 		"""
-# 		diamond blastp \
-# 		--db {input.db} \
-# 		--query {input.query} \
-# 		-o {output.hits} \
-# 		{params.sensitivity} \
-# 		{params.format} \
-# 		{params.header}
-# 		"""
-
-# checkpoint to_parquet:
-# 	input:
-# 		isolates = rules.run_DIAMOND.output.hits
-# 	output:
-# 		db = temp("data/db"),
-# 		isolates_parquet = directory("data/alignment/hits.pq")
-# 	threads:
-# 		64
-# 	resources:
-# 		mem_mb=300000
-# 	shell:
-# 		"""
-# 		duckdb {output.db} \
-# 		-c "SET threads = {threads};\
-# 		COPY ( \
-# 		SELECT split_part(qseqid, '|',1) AS isolate, qseqid, sseqid, evalue, bitscore \
-# 		FROM read_csv('{input.isolates}', delim = '\\t', header = true))\
-# 		TO '{output.isolates_parquet}' \
-# 		(FORMAT parquet, PARTITION_BY isolate); "
-# 		"""
-
-# def get_filesnames(wildcards):
-# 	checkpoint_output = checkpoints.to_parquet.get().output[1]
-# 	return expand("data/alignment/hits.pq/{isolate}",isolate=glob_wildcards(os.assembled_path.join(checkpoint_output, "{isolate}/data_0.parquet")).isolate)
-     
 
 # rule match_to_samples:
 # 	input:
@@ -637,36 +527,3 @@ rule match_isolate_to_samples:
 # 		EOF
 # 		"""
 
-
-# def get_map_files(wildcards):
-# 	checkpoint_output = checkpoints.to_parquet.get().output[1]
-# 	return expand("data/matched_isolates/{isolate}",isolate=glob_wildcards(os.assembled_path.join(checkpoint_output, "{isolate}.pq")).isolate)
-     
-# rule summary:
-# 	input:
-# 		get_map_files
-# 	output:
-# 		summary = "data/matched_summary.tsv",
-# 		db = temp("data/summary/temp.db")
-
-# 	shell:
-# 		"""
-# 		duckdb {output.db} <<- EOF
-# 				COPY (
-# 			SELECT
-# 					MATCHED_ISOLATES.qseqid,
-# 					count(MATCHED_ISOLATES.Sample_id),
-# 					max(MATCHED_ISOLATES.sseqid_proportion_sum)
-# 			FROM
-# 					read_parquet("{input.}")
-# 					AS MATCHED_ISOLATES
-# 			GROUP BY
-# 					MATCHED_ISOLATES.qseqid
-# 			ORDER BY
-# 					MATCHED_ISOLATES.qseqid, count(MATCHED_ISOLATES.Sample_id) DESC
-# 			)
-# 		TO
-# 			"{output.summary}"
-# 			(FORMAT CSV, header true, delim '\\t');
-# 		EOF
-# 		"""

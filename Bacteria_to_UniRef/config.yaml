@@ -1,6 +1,5 @@
-assembled_path: /ptmp/pboppert/Pathocom/diamond-postprocess-playground/input/bacteria_fa/
-ref_db: /ptmp/pboppert/Pathocom/diamond-postprocess-playground/input/DIAMOND_databases/uniref90.dmnd
-abundance_table: /ptmp/pboppert/Pathocom/diamond-postprocess-playground/code/Pipeline/protein_abundance.pq
-ncbi_mapping: /ptmp/pboppert/Pathocom/diamond-postprocess-playground/input/idmapping_selected.tab.gz
-reads_path: /ptmp/pboppert/Pathocom/diamond-postprocess-playground/input/Isolate_reads
-protein_abundance: /ptmp/pboppert/Pathocom/diamond-postprocess-playground/code/Bacteria_to_UniRef_pipeline/abundance_part
+assembled_path:  path/to/assembled/bacterial/fasta/files/
+reads_path: path/to/bacterial/reads/fasta/files
+ref_db: path/to/DIAMOND/ref/database/uniref90.dmnd
+ncbi_mapping: path/to/ncbi_mapping/file/idmapping_selected.tab.gz
+protein_abundance: path/to/protein_abundance/file
