@@ -7,8 +7,8 @@ Two pipelines are used to transform the collected metagenome shotgun data into a
 
 Expects a folder with sample blasted aganist the clustered uniref database, each tsv file should at least contain qseqid, sseqid and bitscore. For each sample it will create a parquet file apply diamonds topx filtering (if not needed set topx = 0 in config file) and calculates per sample protein aboundance tables with counts.
 At the end a single DuckDB database is created, containing all per sample proteins abundance counts in an single table.
-The file querys.sql can be used to load the NCBI mapping table and pepare SQL queries, by GO term and  UniProtKB_AC.
-Pepared sql queries can be accessed by DuckDB programm api's and allow for faster repeated queries. 
+We then load the NCBI mapping table, a custom table containing linage information and pepare SQL queries.
+Pepared sql queries can be accessed by DuckDB programm api's and allow for faster repeated queries e.g select all proteins and their counts belonging to a single given GO term. 
 
 ### Bacteria to uniref: 
 
@@ -31,6 +31,6 @@ To run it you will have to install [Snakemake](https://snakemake.readthedocs.io/
 `curl https://install.duckdb.org | sh`
 
 ### Executing
-You can run this pipline via Snakemake on a single node, use the Snakemakes build in Slurm executor or use a custom slurm executor to run it on multiple nodes simultaneous. 
+You can run this pipline via Snakemake on a single node, use the Snakemake"s build in Slurm executor or a custom slurm executor fort faster execution on multiple nodes. 
 
 
